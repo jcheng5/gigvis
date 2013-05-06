@@ -6,12 +6,15 @@
 vega_spec <- function(gv,
                       width = 600, height = 400, padding = c(20, 20, 30, 50),
                       envir = parent.frame()) {
+  datasources <- VegaDataSourceContext$new()
+  
+  gv <- initialize_data(gv, datasources, envir)
 
   # These are key-values that only appear at the top level of the tree
   spec <- list(
     width = width,
     height = height,
-    scales = vega_scales(gv$scales, gv$mapping, gv$data),
+    scales = vega_scales(gv$scales, gv$mapping, gv$data_id),
 
     axes = list(list(type = "x", scale = "x"), list(type = "y", scale = "y")),
     padding = c(
@@ -24,10 +27,55 @@ vega_spec <- function(gv,
 
   # Now deal with keys that also appear in lower levels of the tree, and merge
   # them in to the spec.
-  spec <- c(spec, vega_process_node(node = gv, state = list(), envir = envir))
+  spec <- c(spec, vega_process_node(
+    node = gv, state = list(), datasources, envir = envir
+  ))
 
-  spec
+  list(spec = spec,
+       datasources = datasources$toList())
 }
+
+
+initialize_data <- function(node, datasources, envir) {
+  if (!is.null(node$data_id) || is.null(node$data))
+    return(node)
+  
+  node$data_id <- datasources$addSource(function() {
+    eval(parse(text=node$data), envir=envir)
+  })
+  return(node)
+}
+
+# Stores a named set of functions that represent R-backed sources of data for
+# Vega plots. The names are automatically generated and are designed to be
+# "universally" unique (though current implementation falls far short!).
+VegaDataSourceContext <- setRefClass(
+  'VegaDataSourceContext',
+  fields = list(
+    '.sources' = 'environment'
+  ),
+  methods = list(
+    initialize = function() {
+      .sources <<- new.env()
+    },
+    # Add a source; return the unique ID generated for the source
+    addSource = function(func, prefix = 'data') {
+      id <- .uniqueId(prefix)
+      .sources[[id]] <<- func
+      return(id)
+    },
+    toList = function() {
+      as.list(.sources)
+    },
+    # Generate a unique ID, starting with the given prefix. The prefix should be
+    # a valid JavaScript identifier (must start with a letter or underscore, can
+    # contain letters, numbers, or underscore).
+    .uniqueId = function(prefix) {
+      # TODO: Use better unique ID
+      sprintf('%s_%d', prefix, as.integer(runif(1, min=1e8, max=1e9-1)))
+    }
+  )
+)
 
 
 # Recursively process nodes in the tree.
@@ -42,23 +90,23 @@ vega_spec <- function(gv,
 # @param state The inherited state of data and mapping at this level of the tree.
 # @param envir Environment in which to evaluate \code{data}, to retrieve
 #   the data object.
-vega_process_node <- function(node, state, envir) {
+vega_process_node <- function(node, state, datasources, envir) {
 
   if (inherits(node, "gigvis")) {
-    data <- eval(parse(text = node$data), envir)
-    data <- list(vega_df(data, name = node$data))
-
+    node <- initialize_data(node, datasources, envir)
+    
     return(list(
-      data = data,
+      data = list(name = node$data_id),
       marks = lapply(
         node$children,
         FUN = vega_process_node,
-        state = list(data = node$data, mapping = node$mapping),
+        state = list(data_id = node$data_id, mapping = node$mapping),
+        datasources = datasources,
         envir = envir)
     ))
 
   } else if (inherits(node, "mark")) {
-    vega_mark(node, state$mapping, state$data)
+    vega_mark(node, state$mapping, state$data_id)
   }
 }
 
@@ -143,7 +191,7 @@ vega_scale <- function(scale, domain, data) {
 
 
 # Given a gigvis mark object, output a vega mark object
-vega_mark <- function(mark, mapping, data) {
+vega_mark <- function(mark, mapping, data_id) {
 
   # Generate the fields related to mappings (x, y, etc)
   # This assumes that the scale's name is the same as the 'name' field, which
@@ -159,7 +207,7 @@ vega_mark <- function(mark, mapping, data) {
   # TODO: Support other properties besides just stroke and fill
   list(
     type = vega_mark_type(mark),
-    from = list(data = data),
+    from = list(data = data_id),
     properties = list(
       update = c(
         vega_mapping,
