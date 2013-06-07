@@ -101,8 +101,18 @@ view_dynamic <- function(gv, envir = parent.frame(), controls = NULL,
         # between the different iterations
         
         data_name <- name
-        obs <- observe({
-          data <- datasets[[data_name]]
+        data <- datasets[[data_name]]
+        
+        if (is.function(data)) {
+          # We need to force the input and session to be accessible to the
+          # function. This is one easy way to do that.
+          shiny_env <- new.env(parent=environment(data))
+          shiny_env$input <- input
+          shiny_env$session <- session
+          environment(data) <- shiny_env
+        }
+        
+        obs <- observe(local({
           if (is.function(data)) {
             # If it's a function, run it.
             # TODO: Inject `input` and `session` into data function
@@ -126,7 +136,7 @@ view_dynamic <- function(gv, envir = parent.frame(), controls = NULL,
             name = data_name,
             value = d3df(data)
           ))
-        })
+        }))
         session$onSessionEnded(function() {
           obs$suspend()
         })
